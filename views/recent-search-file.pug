@@ -1,0 +1,31 @@
+html
+  head
+    title= title
+  body
+    mixin space(spaces)
+      - for(var x = 0; x < spaces; x++)
+        |  &nbsp; 
+    - var z = 0;
+    - var a = (recentSearch.length - 1);
+    div
+        | [
+        - for (var item = 0; item < recentSearch.length; item++)
+            - var x = 0
+            br
+            div
+                +space(2)
+                | {
+                each value, key in recentSearch[item]
+                    p 
+                        +space(5)
+                        span "#{key}"
+                        | :&nbsp; 
+                        span "#{value}"
+                        if  1 !== x++
+                            | ,
+                +space(2)
+                | }
+                if z++ !== a
+                    | ,
+            if z === (a + 1)
+                | ]

@@ -1,0 +1,34 @@
+html
+  head
+    title= title
+  body
+    mixin space(spaces)
+      - for(var x = 0; x < spaces; x++)
+        |  &nbsp; 
+    - var z = 0;
+    - var a = (imageSearch.length - 1);
+    div
+        | [
+        - for (var item = 0; item < imageSearch.length; item++)
+            - var x = 0
+            br
+            div
+                +space(2)
+                | {
+                each value, key in imageSearch[item]
+                    p 
+                        +space(5)
+                        span "#{key}"
+                        | :&nbsp; 
+                        if key === 'snippet'
+                           span "#{value}"
+                        else
+                            a(href= value) "#{value}"
+                        if  3 !== x++
+                            | ,
+                +space(2)
+                | }
+                if z++ !== a
+                    | ,
+            if z === (a + 1)
+                | ]
