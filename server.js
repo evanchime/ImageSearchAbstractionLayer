@@ -7,8 +7,16 @@
 
 var fs = require('fs');
 var https = require('https');
+var assert = require('assert');
+var MongoClient = require('mongodb').MongoClient;
 var express = require('express');
 var app = express();
+
+//needed for the custom search engine, google api key and mongodb connection string parameters
+var CSE_ID = process.env.CSE_ID;
+var API_KEY = process.env.API_KEY;
+var username = process.env.USERNAME;
+var password = process.env.PASSWORD;
 
 if (!process.env.DISABLE_XORIGIN) {
   app.use(function(req, res, next) {
@@ -27,104 +35,132 @@ if (!process.env.DISABLE_XORIGIN) {
 app.set("views", __dirname + "/views");
 app.set("view engine", "pug");
 
-app.get('/api/imagesearch/:searchTerm', function (request, response) {
-    var endPoint = 'https://cryptic-ridge-9197.herokuapp.com/api/imagesearch/' + 
-      request.params.searchTerm + '?offset=' + request.query.offset;
-   function callBack(err, data){
-      if(err){
-        console.error(err.message);
-      }
-      else{
-        response.render('image-search-file', { title: 'Image Search', imageSearch: data})
-      }
-     return;
-   }
-    getRequest(endPoint, callBack);
-})
+var mongoDBConnectionString = 'mongodb://' + username + ':' + password + '@cluster0-shard-00-00-s80cm.mongodb.net:27017,' +
+        'cluster0-shard-00-01-s80cm.mongodb.net:27017,' + 'cluster0-shard-00-02-s80cm.mongodb.net:27017/imageSearch?ssl=true&replicaSet=Cluster0-shard-0&authSource=admin'
 
-app.get('/api/latest/imagesearch/', function (request, response) {
-  var endPoint = 'https://cryptic-ridge-9197.herokuapp.com/api/latest/imagesearch/';
-  function callBack(err, data){
-      if(err){
-        console.error(err.message);
-      }
-      else{
-        response.render('recent-search-file', { title: 'Recent Search', recentSearch: data })
-      }
-     return;
-   }
-    getRequest(endPoint, callBack);
-})
+MongoClient.connect(mongoDBConnectionString, function(err, db) {
 
-app.use('/public', express.static(process.cwd() + '/public'));
+        assert.equal(null, err);
+        console.log("Successfully connected to MongoDB.");
 
-app.route('/_api/package.json')
-  .get(function(req, res, next) {
-    console.log('requested');
-    fs.readFile(__dirname + '/package.json', function(err, data) {
-      if(err) return next(err);
-      res.type('txt').send(data.toString());
-    });
-  });
-  
-app.route('/')
-    .get(function(req, res) {
-		  res.sendFile(process.cwd() + '/views/index.html');
+        //image search middleware
+    app.get('/api/imagesearch/:searchTerm', function (request, response) {
+    var searchTerm = request.params.searchTerm;
+    var offset = (request.query.offset) ? request.query.offset : 1;
+    var returnedAmount = 10;
+
+        //save searchterm on database
+        db.collection('recentSearch').insertOne({
+            'term': searchTerm,
+            'when': new Date().toISOString()
+        })
+
+    var endPoint = 'https://www.googleapis.com/customsearch/v1?key=' + API_KEY + '&cx=' + 
+                CSE_ID + '&q=' + searchTerm + '&num=' + returnedAmount + '&searchType=image&start=' + offset + '&safe=high'
+        https.get(endPoint, (res) => {
+        const statusCode  = res.statusCode;
+        const contentType = res.headers['content-type'];
+
+        var error;
+        if (statusCode !== 200) {
+            error = new Error('Request Failed.\n' +
+                            `Status Code: ${statusCode}`);
+        } else if (!/^application\/json/.test(contentType)) {
+            error = new Error('Invalid content-type.\n' +
+                            `Expected application/json but received ${contentType}`);
+        }
+        if (error) {
+            console.error(error.message);
+            // consume response data to free up memory
+            res.resume();
+            return;
+        }
+
+        res.setEncoding('utf8');
+        var rawData = '';
+        res.on('data', (chunk) => { rawData += chunk; 
+        });
+        res.on('end', () => {
+            try {
+            rawData = JSON.parse(rawData);
+            var dataArray = [];
+
+        for (let i = 0; i < returnedAmount; i++){
+        dataArray.push({
+                "url": rawData.items[i].link,
+                "snippet": rawData.items[i].snippet,
+                "thumbnail": rawData.items[i].image.thumbnailLink,
+                "context": rawData.items[i].image.contextLink
+        })
+        }
+            response.render('image-search-file', { title: 'Image Search', imageSearch: dataArray})
+            } catch (e) {
+            console.error(e.message);
+            }
+        });
+        }).on('error', (e) => {
+        console.error(`Got error: ${e.message}`);
+        }); 
     })
 
-// Respond not found to all the wrong routes
-app.use(function(req, res, next){
-  res.status(404);
-  res.type('txt').send('Not found');
-});
+    //recent image searched middleware
+    app.get('/api/latest/imagesearch/', function (request, response, next) {
+      //get recent searches
+      db.collection('recentSearch').find({},{'_id': 0}).toArray(function(err, docs) {
+          if(err) throw err;
 
-// Error Middleware
-app.use(function(err, req, res, next) {
-  if(err) {
-    res.status(err.status || 500)
-      .type('txt')
-      .send(err.message || 'SERVER ERROR');
-  }  
-})
-
-app.listen(process.env.PORT, function () {
-  console.log('Node.js listening ...');
-});
-
-
-function getRequest(endPoint, callBack){
-  https.get(endPoint, (res) => {
-      const statusCode  = res.statusCode;
-      const contentType = res.headers['content-type'];
-
-      var error;
-      if (statusCode !== 200) {
-        error = new Error('Request Failed.\n' +
-                          `Status Code: ${statusCode}`);
-      } else if (!/^application\/json/.test(contentType)) {
-        error = new Error('Invalid content-type.\n' +
-                          `Expected application/json but received ${contentType}`);
+          if (docs.length < 1) {
+              next();
+          } 
+          else{
+            var recentSearch = [], recentSearchAmount = 10;
+          // display recentSearchAmount most recent 
+          if(docs.length > recentSearchAmount){
+              docs = docs.slice(docs.length - recentSearchAmount);
+          }
+          for (let i = 0; i < docs.length; i++){
+              recentSearch.push(docs[i]);
+          }
+            response.render('recent-search-file', { title: 'Recent Search', recentSearch: recentSearch})
+          }
       }
-      if (error) {
-        callBack(error);
-        // consume response data to free up memory
-        res.resume();
-        return;
-      }
+      
+    )})
 
-      res.setEncoding('utf8');
-      var rawData = '';
-      res.on('data', (chunk) => { rawData += chunk; });
-      res.on('end', () => {
-        try {
-          const parsedData = JSON.parse(rawData);
-          callBack(null,parsedData);
-        } catch (e) {
-          console.error(e.message);
-        }
-      });
-    }).on('error', (e) => {
-      console.error(`Got error: ${e.message}`);
-    }); 
-}
+    //other middlewares
+    app.use('/public', express.static(process.cwd() + '/public'));
 
+    app.route('/_api/package.json')
+    .get(function(req, res, next) {
+        console.log('requested');
+        fs.readFile(__dirname + '/package.json', function(err, data) {
+        if(err) return next(err);
+        res.type('txt').send(data.toString());
+        });
+    });
+
+    app.route('/')
+        .get(function(req, res) {
+            res.sendFile(process.cwd() + '/views/index.html');
+        })
+
+    // Respond not found to all the wrong routes
+    app.use(function(req, res, next){
+    res.status(404);
+    res.type('txt').send('Not found');
+    });
+
+    // Error Middleware
+    app.use(function(err, req, res, next) {
+    if(err) {
+        res.status(err.status || 500)
+        .type('txt')
+        .send(err.message || 'SERVER ERROR');
+    }  
+    })
+
+    app.listen(process.env.PORT, function () {
+    console.log('Node.js listening ...');
+    });
+
+});
